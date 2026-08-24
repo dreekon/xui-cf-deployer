@@ -11,6 +11,7 @@ import ssl
 import subprocess
 import sys
 import time
+import unicodedata
 import uuid
 from getpass import getpass
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -53,46 +54,603 @@ API_MIN_VERSION = (2, 0, 0)
 XUI_BINARY_CANDIDATES = ("/usr/local/x-ui/x-ui", "/usr/bin/x-ui")
 XUI_CLI_SCRIPT_CANDIDATES = ("/usr/bin/x-ui", "/usr/local/x-ui/x-ui.sh")
 XUI_MENU_ZH_MARKER = "# cf-deployer-xui-menu-zh"
-XUI_MENU_REPLACEMENTS: List[tuple[str, str]] = [
-    ('echo "The OS release is: $release"', 'echo "系统发行版: $release"'),
+
+# x-ui 脚本里的用户可见文案，按片段匹配，不绑定菜单编号
+XUI_TEXT_PHRASES: List[Tuple[str, str]] = [
+    ("Failed to check the system OS, please contact the author!", "无法识别系统版本，请联系作者！"),
+    ("The OS release is:", "系统发行版:"),
+    ("Restart the panel, Attention: Restarting the panel will also restart xray", "重启面板，注意: 重启面板会同时重启 xray"),
+    ("Press enter to return to the main menu:", "按回车返回主菜单: "),
+    ("This function will update all x-ui components to the latest version, and the data will not be lost. Do you want to continue?",
+     "此操作会把 x-ui 所有组件更新到最新版，数据不会丢失。继续吗?"),
+    ("Cancelled", "已取消"),
+    ("Update is complete, Panel has automatically restarted ", "更新完成，面板已自动重启 "),
+    ("This will update x-ui to the latest DEV commit (the rolling 'dev-latest' build, not a stable release). Your data is preserved. Continue?",
+     "此操作会把 x-ui 更新到最新开发版提交(dev-latest 滚动构建，非稳定版)，数据会保留。继续吗?"),
+    ("Dev update is complete, Panel has automatically restarted ", "开发版更新完成，面板已自动重启 "),
+    ("Updating Menu", "正在更新菜单"),
+    ("This function will update the menu to the latest changes.", "此操作会把菜单更新到最新版本。"),
+    ("Update successful. The panel has automatically restarted.", "更新成功，面板已自动重启。"),
+    ("Failed to update the menu.", "菜单更新失败。"),
+    ("Enter the panel version (like 2.4.0):", "请输入面板版本(例如 2.4.0):"),
+    ("Panel version cannot be empty. Exiting.", "面板版本不能为空，已退出。"),
+    ("Downloading and installing panel version", "正在下载并安装面板版本"),
+    ("Are you sure you want to uninstall the panel? xray will also uninstalled!", "确定要卸载面板吗? xray 也会一并卸载！"),
+    ("Uninstalled Successfully.", "卸载成功。"),
+    ("If you need to install this panel again, you can use below command:", "如需重新安装本面板，可执行以下命令:"),
+    ("Are you sure to reset the username and password of the panel?", "确定要重置面板的用户名和密码吗?"),
+    ("Please set the login username [default is a random username]: ", "请设置登录用户名 [直接回车则随机生成]: "),
+    ("Please set the login password [default is a random password]: ", "请设置登录密码 [直接回车则随机生成]: "),
+    ("Do you want to disable currently configured two-factor authentication? (y/n): ",
+     "要关闭当前已配置的两步验证吗? (y/n): "),
+    ("Two factor authentication has been disabled.", "两步验证已关闭。"),
+    ("Panel login username has been reset to:", "面板登录用户名已重置为:"),
+    ("Panel login password has been reset to:", "面板登录密码已重置为:"),
+    ("Please use the new login username and password to access the X-UI panel. Also remember them!",
+     "请用新的用户名和密码登录 X-UI 面板，记好别忘了！"),
+    ("Resetting Web Base Path", "正在重置面板访问路径"),
+    ("Are you sure you want to reset the web base path? (y/n): ", "确定要重置面板访问路径吗? (y/n): "),
+    ("Operation canceled.", "操作已取消。"),
+    ("Web base path has been reset to:", "面板访问路径已重置为:"),
+    ("Please use the new web base path to access the panel.", "请用新的访问路径打开面板。"),
+    ("Are you sure you want to reset all panel settings, Account data will not be lost, Username and password will not change",
+     "确定要重置全部面板设置吗? 账号数据不会丢失，用户名和密码也不变"),
+    ("All panel settings have been reset to default.", "全部面板设置已恢复默认。"),
+    ("get current settings error, please check logs", "读取当前设置失败，请查看日志"),
+    ("Database: PostgreSQL", "数据库: PostgreSQL"),
+    ("Database: SQLite (/etc/x-ui/x-ui.db)", "数据库: SQLite (/etc/x-ui/x-ui.db)"),
+    ("Could not auto-detect server IP from any provider.", "所有渠道都没能自动获取到服务器 IP。"),
+    ("Please enter your server's public IPv4 address: ", "请输入服务器的公网 IPv4 地址: "),
+    ("Invalid IPv4 address. Please try again.", "IPv4 地址不合法，请重试。"),
+    ("Access URL:", "访问地址:"),
+    ("The certificate also covers:", "该证书还覆盖:"),
+    ("WARNING: No SSL certificate configured!", "警告: 未配置 SSL 证书！"),
+    ("You can get a Let's Encrypt certificate for your IP address (valid ~6 days, auto-renews).",
+     "可以给 IP 申请 Let's Encrypt 证书(有效期约 6 天，自动续期)。"),
+    ("Generate SSL certificate for IP now? [y/N]: ", "现在就给 IP 申请 SSL 证书吗? [y/N]: "),
+    ("IP certificate setup failed.", "IP 证书配置失败。"),
+    ("You can try again via main menu option 20 (SSL Certificate Management).", "可以从主菜单的 SSL 证书管理再试一次。"),
+    ("For security, please configure SSL certificate using main menu option 20 (SSL Certificate Management)",
+     "为了安全，请从主菜单的 SSL 证书管理配置证书"),
+    ("Enter port number[1-65535]: ", "请输入端口号[1-65535]: "),
+    ("The port is set, Please restart the panel now, and use the new port", "端口已设置，请重启面板，然后用新端口"),
+    ("to access web panel", "访问面板"),
+    ("Panel is running, No need to start again, If you need to restart, please select restart",
+     "面板已在运行，无需重复启动；要重启请选重启"),
+    ("Panel process is not running inside this container.", "容器内没有检测到面板进程。"),
+    ("In Docker the panel is the container's main process. Restart the container to bring it back up:",
+     "Docker 下面板就是容器主进程，重启容器即可拉起:"),
+    ("x-ui Started Successfully", "x-ui 启动成功"),
+    ("panel Failed to start, Probably because it takes longer than two seconds to start, Please check the log information later",
+     "面板启动失败，可能是启动超过两秒，稍后请查看日志"),
+    ("Panel stopped, No need to stop again!", "面板已停止，无需重复停止！"),
+    ("In Docker the panel runs as the container's main process.", "Docker 下面板以容器主进程运行。"),
+    ("To stop it, stop the container from the host:", "要停止就在宿主机上停这个容器:"),
+    ("x-ui and xray stopped successfully", "x-ui 和 xray 已停止"),
+    ("Panel stop failed, Probably because the stop time exceeds two seconds, Please check the log information later",
+     "面板停止失败，可能是停止超过两秒，稍后请查看日志"),
+    ("Restart signal sent to the panel and xray-core.", "已向面板和 xray-core 发送重启信号。"),
+    ("Could not find the running panel process to signal.", "没找到正在运行的面板进程，无法发送信号。"),
+    ("x-ui and xray Restarted successfully", "x-ui 和 xray 重启成功"),
+    ("Panel restart failed, Please check the log information later", "面板重启失败，请稍后查看日志"),
+    ("Panel restart failed, Probably because it takes longer than two seconds to start, Please check the log information later",
+     "面板重启失败，可能是启动超过两秒，稍后请查看日志"),
+    ("xray-core Restart signal sent successfully, Please check the log information to confirm whether xray restarted successfully",
+     "xray-core 重启信号已发送，请查看日志确认是否重启成功"),
+    ("Autostart is controlled by the Docker restart policy (e.g. 'restart: unless-stopped' in docker-compose.yml).",
+     "开机自启由 Docker 重启策略控制(比如 docker-compose.yml 里的 restart: unless-stopped)。"),
+    ("There is no service to enable inside the container.", "容器内没有可以设置自启的服务。"),
+    ("x-ui Set to boot automatically on startup successfully", "x-ui 开机自启设置成功"),
+    ("x-ui Failed to set Autostart", "x-ui 设置开机自启失败"),
+    ("Set 'restart: no' for the container on the host to disable autostart.",
+     "在宿主机把容器设成 restart: no 即可关闭自启。"),
+    ("x-ui Autostart Cancelled successfully", "x-ui 开机自启已取消"),
+    ("x-ui Failed to cancel autostart", "x-ui 取消开机自启失败"),
+    ("Debug Log", "调试日志"),
+    ("Back to Main Menu", "返回主菜单"),
+    ("Choose an option: ", "请选择: "),
+    ("Invalid option. Please select a valid number.", "选项无效，请输入正确的数字。"),
+    ("Clear All logs", "清空所有日志"),
+    ("All Logs cleared.", "全部日志已清空。"),
+    ("Enable BBR", "启用 BBR"),
+    ("Disable BBR", "关闭 BBR"),
+    ("BBR is not currently enabled.", "当前未启用 BBR。"),
+    ("BBR has been replaced with CUBIC successfully.", "已把 BBR 换回 CUBIC。"),
+    ("Failed to replace BBR with CUBIC. Please check your system configuration.", "换回 CUBIC 失败，请检查系统配置。"),
+    ("BBR is already enabled!", "BBR 已经是启用状态！"),
+    ("BBR has been enabled successfully.", "BBR 启用成功。"),
+    ("Failed to enable BBR. Please check your system configuration.", "BBR 启用失败，请检查系统配置。"),
+    ("Upgrade script succeeded, Please rerun the script", "脚本升级成功，请重新运行脚本"),
+    ("Failed to download script, Please check whether the machine can connect Github",
+     "脚本下载失败，请检查机器能否连上 GitHub"),
+    ("Panel installed, Please do not reinstall", "面板已安装，请勿重复安装"),
+    ("Please install the panel first", "请先安装面板"),
+    ("Panel state:", "面板状态:"),
+    ("Running", "运行中"),
+    ("Not Running", "未运行"),
+    ("Not Installed", "未安装"),
+    ("Start automatically:", "开机自启:"),
+    ("Managed by Docker", "由 Docker 管理"),
+    ("Yes", "是"),
+    ("No", "否"),
+    ("xray state:", "xray 状态:"),
+    ("mtproto inbound", "mtproto 入站"),
+    ("Firewall Status", "防火墙状态"),
+    ("Port List [numbered]", "端口列表[带编号]"),
+    ("Ports from List", "列表中的端口"),
+    ("Firewall", "防火墙"),
+    ("Ports", "端口"),
+    ("Install", "安装"),
+    ("Open", "开放"),
+    ("Delete", "删除"),
+    ("Enable", "启用"),
+    ("Disable", "关闭"),
+    ("ufw firewall is not installed. Installing now...", "未安装 ufw 防火墙，正在安装..."),
+    ("ufw firewall is already installed", "ufw 防火墙已安装"),
+    ("Firewall is already active", "防火墙已在运行"),
+    ("Activating firewall...", "正在启用防火墙..."),
+    ("Enter the ports you want to open (e.g. 80,443,2053 or range 400-500): ",
+     "请输入要开放的端口(例如 80,443,2053 或区间 400-500): "),
+    ("Error: Invalid input. Please enter a comma-separated list of ports or a range of ports (e.g. 80,443,2053 or 400-500).",
+     "错误: 输入不合法。请用逗号分隔端口或写区间(例如 80,443,2053 或 400-500)。"),
+    ("Opened the specified ports:", "已开放指定端口:"),
+    ("Current UFW rules:", "当前 UFW 规则:"),
+    ("Do you want to delete rules by:", "按哪种方式删除规则:"),
+    ("1) Rule numbers", "1) 规则编号"),
+    ("2) Ports", "2) 端口"),
+    ("Enter your choice (1 or 2): ", "请选择(1 或 2): "),
+    ("Enter the rule numbers you want to delete (1, 2, etc.): ", "请输入要删除的规则编号(如 1, 2): "),
+    ("Error: Invalid input. Please enter a comma-separated list of rule numbers.", "错误: 输入不合法。请用逗号分隔规则编号。"),
+    ("Selected rules have been deleted.", "所选规则已删除。"),
+    ("Enter the ports you want to delete (e.g. 80,443,2053 or range 400-500): ",
+     "请输入要删除的端口(例如 80,443,2053 或区间 400-500): "),
+    ("Deleted the specified ports:", "已删除指定端口:"),
+    ("Error:", "错误:"),
+    ("Invalid choice. Please enter 1 or 2.", "选项无效，请输入 1 或 2。"),
+    ("update_geofiles: unknown dataset '", "update_geofiles: 未知数据集 '"),
+    (".dat: download failed", ".dat: 下载失败"),
+    (".dat: already up to date", ".dat: 已是最新"),
+    (".dat: downloaded file is empty", ".dat: 下载到的文件是空的"),
+    (".dat: failed to install", ".dat: 安装失败"),
+    (".dat: updated", ".dat: 已更新"),
+    ("could not be updated. Check the errors above.", "更新失败，请看上面的报错。"),
+    ("have been updated successfully!", "更新成功！"),
+    ("are already up to date, restart is not needed.", "已是最新，无需重启。"),
+    ("Some", "部分"),
+    ("All", "全部"),
+    ("acme.sh is already installed.", "acme.sh 已安装。"),
+    ("Installing acme.sh...", "正在安装 acme.sh..."),
+    ("Installation of acme.sh failed.", "acme.sh 安装失败。"),
+    ("Installation of acme.sh succeeded.", "acme.sh 安装成功。"),
+    ("Get SSL (Domain)", "申请证书(域名)"),
+    ("Revoke & Remove", "吊销并删除"),
+    ("Force Renew", "强制续期"),
+    ("Show Existing Domains", "查看已有域名"),
+    ("Set Cert paths for the panel", "为面板设置证书路径"),
+    ("Get SSL for IP Address (6-day cert, auto-renews)", "为 IP 申请证书(6 天有效，自动续期)"),
+    ("No certificates found to revoke.", "没有可吊销的证书。"),
+    ("Existing domains:", "已有域名:"),
+    ("Please enter a domain from the list to revoke and remove the certificate: ", "请从上面选一个域名，吊销并删除它的证书: "),
+    ("Certificate revoked and removed for domain:", "证书已吊销并删除，域名:"),
+    ("Cleared panel certificate paths referencing", "已清除面板中指向该域名的证书路径:"),
+    ("; restarting panel.", "，正在重启面板。"),
+    ("Invalid domain entered.", "输入的域名不合法。"),
+    ("No certificates found to renew.", "没有可续期的证书。"),
+    ("Please enter a domain from the list to renew the SSL certificate: ", "请从上面选一个域名来续期证书: "),
+    ("Certificate forcefully renewed for domain:", "证书已强制续期，域名:"),
+    ("No certificates found under /root/cert.", "/root/cert 下没有证书。"),
+    ("Existing domains and their paths:", "已有域名及其路径:"),
+    ("Domain:", "域名:"),
+    ("Certificate Path:", "证书路径:"),
+    ("Private Key Path:", "私钥路径:"),
+    ("- Certificate or Key missing.", "- 证书或私钥缺失。"),
+    ("Panel certificate (custom path):", "面板证书(自定义路径):"),
+    ("Use a certificate from /root/cert", "使用 /root/cert 下的证书"),
+    ("Enter custom certificate file paths (e.g. certbot, /etc/letsencrypt/...)",
+     "手动输入证书文件路径(例如 certbot 的 /etc/letsencrypt/...)"),
+    ("Certificate file path (fullchain): ", "证书文件路径(fullchain): "),
+    ("Private key file path: ", "私钥文件路径: "),
+    ("Panel certificate paths set:", "面板证书路径已设置:"),
+    ("- Certificate File:", "- 证书文件:"),
+    ("- Private Key File:", "- 私钥文件:"),
+    ("Certificate or private key file not found.", "证书或私钥文件不存在。"),
+    ("No certificates found.", "没有找到证书。"),
+    ("Available domains:", "可用域名:"),
+    ("Please choose a domain to set the panel paths: ", "请选择要给面板设置路径的域名: "),
+    ("Panel paths set for domain:", "面板证书路径已设置，域名:"),
+    ("Registered acme.sh auto-renewal hook for", "已注册 acme.sh 自动续期钩子:"),
+    ("Certificate or private key not found for domain:", "找不到该域名的证书或私钥:"),
+    ("Let's Encrypt SSL Certificate for IP Address", "给 IP 申请 Let's Encrypt 证书"),
+    ("This will obtain a certificate for your server's IP using the shortlived profile.",
+     "会用短效证书方案给服务器 IP 申请证书。"),
+    ("Certificate valid for ~6 days, auto-renews via acme.sh cron job.", "证书有效期约 6 天，靠 acme.sh 的定时任务自动续期。"),
+    ("Port 80 must be open and accessible from the internet.", "80 端口必须开放且外网能访问。"),
+    ("Do you want to proceed?", "要继续吗?"),
+    ("Starting automatic SSL certificate generation for server IP...", "开始给服务器 IP 自动签发证书..."),
+    ("Using Let's Encrypt shortlived profile (~6 days validity, auto-renews)",
+     "使用 Let's Encrypt 短效方案(约 6 天有效，自动续期)"),
+    ("Server IP detected:", "检测到服务器 IP:"),
+    ("Could not auto-detect server IP from any provider.", "所有渠道都没能自动获取到服务器 IP。"),
+    ("Issuing certificate for server IP:", "正在为服务器 IP 签发证书:"),
+    ("Do you have an IPv6 address to include? (leave empty to skip): ", "要一起带上 IPv6 地址吗? (留空跳过): "),
+    ("acme.sh not found, installing...", "没找到 acme.sh，正在安装..."),
+    ("Failed to install acme.sh", "acme.sh 安装失败"),
+    ("Including IPv6 address:", "一并包含 IPv6 地址:"),
+    ("Port to use for ACME HTTP-01 listener (default 80): ", "ACME HTTP-01 验证监听端口(默认 80): "),
+    ("Invalid port provided. Falling back to 80.", "端口不合法，改用 80。"),
+    ("Using port", "使用端口"),
+    ("to issue certificate for IP:", "为该 IP 签发证书:"),
+    ("Reminder: Let's Encrypt still reaches port 80; forward external port 80 to",
+     "注意: Let's Encrypt 仍然只访问 80 端口，需要把外部 80 转发到"),
+    ("for validation.", "以完成验证。"),
+    ("Port", "端口"),
+    ("is currently in use.", "当前被占用。"),
+    ("Enter another port for acme.sh standalone listener (leave empty to abort): ",
+     "换一个端口给 acme.sh 独立监听(留空则中止): "),
+    ("is busy; cannot proceed with issuance.", "被占用，无法继续签发。"),
+    ("Invalid port provided.", "端口不合法。"),
+    ("is free and ready for standalone validation.", "空闲，可以用于独立验证。"),
+    ("Failed to issue certificate for IP:", "IP 证书签发失败:"),
+    ("Make sure port", "请确认端口"),
+    ("is open and the server is accessible from the internet", "已开放且服务器外网可达"),
+    ("Certificate issued successfully for IP:", "IP 证书签发成功:"),
+    ("Certificate files not found after installation", "安装后找不到证书文件"),
+    ("Certificate files installed successfully", "证书文件安装成功"),
+    ("Would you like to set this certificate for the panel? (y/n): ", "要把这个证书设给面板吗? (y/n): "),
+    ("Panel paths set for IP:", "面板证书路径已设置，IP:"),
+    ("- Validity: ~6 days (auto-renews via acme.sh cron)", "- 有效期: 约 6 天(acme.sh 定时任务自动续期)"),
+    ("Panel will restart to apply SSL certificate...", "面板即将重启以应用 SSL 证书..."),
+    ("Error: Certificate or private key file not found for IP:", "错误: 找不到该 IP 的证书或私钥文件:"),
+    ("Skipping panel path setting.", "跳过面板路径设置。"),
+    ("acme.sh could not be found. we will install it", "没找到 acme.sh，将自动安装"),
+    ("install acme failed, please check logs", "acme 安装失败，请查看日志"),
+    ("install socat failed, please check logs", "socat 安装失败，请查看日志"),
+    ("install socat succeed...", "socat 安装成功..."),
+    ("Please enter your domain name: ", "请输入你的域名: "),
+    ("Domain name cannot be empty. Please try again.", "域名不能为空，请重试。"),
+    ("Invalid domain format:", "域名格式不合法:"),
+    (". Please enter a valid domain name.", "。请输入合法域名。"),
+    ("Your domain is:", "你的域名是:"),
+    (", checking it...", "，正在检查..."),
+    ("Existing certificate found for", "已存在证书:"),
+    (", will reuse it.", "，将直接复用。"),
+    ("Your domain is ready for issuing certificates now...", "域名已就绪，可以签发证书了..."),
+    ("Please choose which port to use (default is 80): ", "请选择使用的端口(默认 80): "),
+    ("Your input", "你输入的"),
+    ("is invalid, will use default port 80.", "不合法，改用默认端口 80。"),
+    ("Will use port:", "将使用端口:"),
+    ("to issue certificates. Please make sure this port is open.", "签发证书，请确认该端口已开放。"),
+    ("Issuing certificate failed, please check logs.", "证书签发失败，请查看日志。"),
+    ("Issuing certificate succeeded, installing certificates...", "证书签发成功，正在安装证书..."),
+    ("Using existing certificate, installing certificates...", "复用已有证书，正在安装..."),
+    ("Default --reloadcmd for ACME is:", "ACME 默认的 --reloadcmd 是:"),
+    ("This command will run on every certificate issue and renew.", "每次签发和续期证书都会执行这条命令。"),
+    ("Would you like to modify --reloadcmd for ACME? (y/n): ", "要修改 ACME 的 --reloadcmd 吗? (y/n): "),
+    ("Preset: systemctl reload nginx ; x-ui restart", "预设: systemctl reload nginx ; x-ui restart"),
+    ("Input your own command", "自己输入命令"),
+    ("Keep default reloadcmd", "保持默认 reloadcmd"),
+    ("Reloadcmd is: systemctl reload nginx ; x-ui restart",
+     "reloadcmd 为: systemctl reload nginx ; x-ui restart"),
+    ("It's recommended to put x-ui restart at the end, so it won't raise an error if other services fails",
+     "建议把 x-ui restart 放最后，这样其他服务失败也不会中断"),
+    ("Please enter your reloadcmd (example: systemctl reload nginx ; x-ui restart): ",
+     "请输入 reloadcmd(例如: systemctl reload nginx ; x-ui restart): "),
+    ("Your reloadcmd is:", "你的 reloadcmd 是:"),
+    ("Installing certificate succeeded, enabling auto renew...", "证书安装成功，正在开启自动续期..."),
+    ("Installing certificate failed, exiting.", "证书安装失败，已退出。"),
+    ("Auto renew failed, certificate details:", "自动续期失败，证书详情:"),
+    ("Auto renew succeeded, certificate details:", "自动续期已开启，证书详情:"),
+    ("Error: Certificate or private key file not found for domain:", "错误: 找不到该域名的证书或私钥文件:"),
+    ("****** Instructions for Use ******", "****** 使用说明 ******"),
+    ("Follow the steps below to complete the process:", "按下面的步骤操作:"),
+    ("1. A Cloudflare API Token (recommended, scoped to Zone:DNS:Edit) or the Global API Key + registered email.",
+     "1. 准备 Cloudflare API Token(推荐，权限选 Zone:DNS:Edit)，或者 Global API Key + 注册邮箱。"),
+    ("2. The Domain Name.", "2. 准备域名。"),
+    ("3. Once the certificate is issued, you will be prompted to set the certificate for the panel (optional).",
+     "3. 证书签发后会问你要不要设给面板(可选)。"),
+    ("4. The script also supports automatic renewal of the SSL certificate after installation.",
+     "4. 安装完成后脚本也支持证书自动续期。"),
+    ("Do you confirm the information and wish to proceed? [y/n]", "信息确认无误，继续吗? [y/n]"),
+    ("acme.sh could not be found. We will install it.", "没找到 acme.sh，将自动安装。"),
+    ("Install acme failed, please check logs.", "acme 安装失败，请查看日志。"),
+    ("Please set a domain name:", "请设置域名:"),
+    ("Input your domain here: ", "在此输入域名: "),
+    ("Your domain name is set to:", "域名已设置为:"),
+    ("Are you using a Cloudflare API Token or Global API Key? (t/g) [Default t]: ",
+     "用的是 Cloudflare API Token 还是 Global API Key? (t/g) [默认 t]: "),
+    ("Please set the Global API Key:", "请设置 Global API Key:"),
+    ("Input your key here: ", "在此输入 Key: "),
+    ("Please set up the registered email:", "请设置注册邮箱:"),
+    ("Input your email here: ", "在此输入邮箱: "),
+    ("Please set the API Token:", "请设置 API Token:"),
+    ("Input your token here: ", "在此输入 Token: "),
+    ("Default CA, Let'sEncrypt fail, script exiting...", "默认 CA(Let's Encrypt)设置失败，脚本退出..."),
+    ("Certificate issuance failed, script exiting...", "证书签发失败，脚本退出..."),
+    ("Certificate issued successfully, Installing...", "证书签发成功，正在安装..."),
+    ("Failed to create directory:", "创建目录失败:"),
+    ("Certificate installation failed, script exiting...", "证书安装失败，脚本退出..."),
+    ("Certificate installed successfully, Turning on automatic updates...", "证书安装成功，正在开启自动更新..."),
+    ("Auto update setup failed, script exiting...", "自动更新设置失败，脚本退出..."),
+    ("The certificate is installed and auto-renewal is turned on. Specific information is as follows:",
+     "证书已安装且开启自动续期，详情如下:"),
+    ("Installing Speedtest using snap...", "正在通过 snap 安装 Speedtest..."),
+    ("Error: Package manager not found. You may need to install Speedtest manually.",
+     "错误: 没找到包管理器，可能需要手动安装 Speedtest。"),
+    ("Installing Speedtest using", "正在安装 Speedtest，使用"),
+    ("Install Fail2ban and configure IP Limit", "安装 Fail2ban 并配置 IP 限制"),
+    ("Change Ban Duration", "修改封禁时长"),
+    ("Unban Everyone", "解封所有人"),
+    ("Ban Logs", "封禁日志"),
+    ("Ban an IP Address", "封禁指定 IP"),
+    ("Unban an IP Address", "解封指定 IP"),
+    ("Real-Time Logs", "实时日志"),
+    ("Service Status", "服务状态"),
+    ("Service Restart", "重启服务"),
+    ("Uninstall Fail2ban and IP Limit", "卸载 Fail2ban 和 IP 限制"),
+    ("Proceed with installation of Fail2ban & IP Limit?", "确认安装 Fail2ban 和 IP 限制?"),
+    ("Please enter new Ban Duration in Minutes [default 30]: ", "请输入新的封禁时长(分钟)[默认 30]: "),
+    ("is not a number! Please, try again.", "不是数字！请重试。"),
+    ("Proceed with Unbanning everyone from IP Limit jail?", "确认把 IP 限制里的人全部解封?"),
+    ("All users Unbanned successfully.", "所有用户已解封。"),
+    ("Cancelled.", "已取消。"),
+    ("Enter the IP address you want to ban: ", "请输入要封禁的 IP: "),
+    ("IP Address", "IP 地址"),
+    ("has been banned successfully.", "已封禁。"),
+    ("Invalid IP address format! Please try again.", "IP 地址格式不合法！请重试。"),
+    ("Enter the IP address you want to unban: ", "请输入要解封的 IP: "),
+    ("has been unbanned successfully.", "已解封。"),
+    (", skipping Fail2ban setup.", "，跳过 Fail2ban 配置。"),
+    ("Fail2ban is not installed. Installing now...!", "未安装 Fail2ban，正在安装..."),
+    ("Unsupported operating system. Please check the script and install the necessary packages manually.",
+     "不支持的操作系统，请查看脚本并手动安装所需软件包。"),
+    ("Fail2ban installation failed.", "Fail2ban 安装失败。"),
+    ("Fail2ban installed successfully!", "Fail2ban 安装成功！"),
+    ("Fail2ban is already installed.", "Fail2ban 已安装。"),
+    ("Configuring IP Limit...", "正在配置 IP 限制..."),
+    ("IP Limit installed and configured successfully!", "IP 限制安装并配置成功！"),
+    ("Only remove IP Limit configurations", "只删除 IP 限制配置"),
+    ("IP Limit removed successfully!", "IP 限制已删除！"),
+    ("Unsupported operating system. Please uninstall Fail2ban manually.", "不支持的操作系统，请手动卸载 Fail2ban。"),
+    ("Fail2ban and IP Limit removed successfully!", "Fail2ban 和 IP 限制已删除！"),
+    ("Checking ban logs...", "正在查看封禁日志..."),
+    ("Fail2ban service is not running!", "Fail2ban 服务未运行！"),
+    ("Recent system ban activities from fail2ban.log:", "fail2ban.log 里最近的封禁记录:"),
+    ("3X-IPL ban log entries:", "3X-IPL 封禁日志:"),
+    ("Ban log file is empty", "封禁日志文件是空的"),
+    ("Ban log file not found at:", "找不到封禁日志文件:"),
+    ("Current jail status:", "当前 jail 状态:"),
+    ("Ip Limit jail files created with a bantime of", "IP 限制 jail 已创建，封禁时长"),
+    ("minutes.", "分钟。"),
+    ("Removing conflicts of [3x-ipl] in jail (", "正在清理 jail 中冲突的 [3x-ipl] 配置("),
+    ("Panel is secure with SSL.", "面板已启用 SSL，安全。"),
+    ("Warning: No Cert and Key found! The panel is not secure.", "警告: 没找到证书和私钥！面板未加密。"),
+    ("Please obtain a certificate or set up SSH port forwarding.", "请申请证书，或者配置 SSH 端口转发。"),
+    ("Current SSH Port Forwarding Configuration:", "当前 SSH 端口转发配置:"),
+    ("Standard SSH command:", "标准 SSH 命令:"),
+    ("If using SSH key:", "如果用 SSH 密钥:"),
+    ("After connecting, access the panel at:", "连上之后，用这个地址打开面板:"),
+    ("Choose an option:", "请选择:"),
+    ("Set listen IP", "设置监听 IP"),
+    ("Clear listen IP", "清除监听 IP"),
+    ("No listenIP configured. Choose an option:", "未配置监听 IP，请选择:"),
+    ("1. Use default IP (127.0.0.1)", "1. 用默认 IP (127.0.0.1)"),
+    ("2. Set a custom IP", "2. 自定义 IP"),
+    ("Select an option (1 or 2): ", "请选择(1 或 2): "),
+    ("listen IP has been set to", "监听 IP 已设置为"),
+    ("SSH Port Forwarding Configuration:", "SSH 端口转发配置:"),
+    ("Current listen IP is already set to", "当前监听 IP 已经是"),
+    ("Listen IP has been cleared.", "监听 IP 已清除。"),
+    ("PostgreSQL does not appear to be installed on this system.", "这台机器上似乎没装 PostgreSQL。"),
+    ("PostgreSQL is listening on port 5432:", "PostgreSQL 正在监听 5432 端口:"),
+    ("Nothing is listening on port 5432 - the database is not running.", "5432 端口没人监听，数据库没在跑。"),
+    ("PostgreSQL stop signal sent.", "已发送 PostgreSQL 停止信号。"),
+    ("PostgreSQL set to start automatically on boot.", "PostgreSQL 已设为开机自启。"),
+    ("Failed to enable PostgreSQL autostart.", "PostgreSQL 开机自启设置失败。"),
+    ("No PostgreSQL log found.", "没找到 PostgreSQL 日志。"),
+    ("PostgreSQL is not installed. Use option 1 (Install PostgreSQL) in this menu first.",
+     "PostgreSQL 未安装，请先用本菜单的安装 PostgreSQL。"),
+    ("This panel was using PostgreSQL.", "这个面板之前用的是 PostgreSQL。"),
+    ("WARNING:", "警告:"),
+    ("purging removes the PostgreSQL server and", "彻底清除会删掉 PostgreSQL 服务端，以及这台机器上"),
+    ("ALL", "所有"),
+    ("of its databases on", "的数据库，"),
+    ("this machine, including any used by other applications. This cannot be undone.", "包括其他程序在用的。此操作不可恢复。"),
+    ("Also purge PostgreSQL and delete all of its data?", "同时清除 PostgreSQL 并删掉它的全部数据?"),
+    ("Left PostgreSQL installed; its data was not removed.", "已保留 PostgreSQL，数据未删除。"),
+    ("Unsupported distro for automatic PostgreSQL purge:", "不支持自动清除 PostgreSQL 的发行版:"),
+    (". Remove it manually.", "。请手动删除。"),
+    ("PostgreSQL has been purged.", "PostgreSQL 已彻底清除。"),
+    ("Unsupported distro for automatic PostgreSQL install:", "不支持自动安装 PostgreSQL 的发行版:"),
+    ("Installing PostgreSQL client tools (pg_dump/pg_restore)...",
+     "正在安装 PostgreSQL 客户端工具(pg_dump/pg_restore)..."),
+    ("Invalid PostgreSQL major version '", "PostgreSQL 主版本号不合法 '"),
+    ("' (expected a number like 17).", "'(应该是 17 这样的数字)。"),
+    ("PostgreSQL client tools are already installed (version", "PostgreSQL 客户端工具已安装(版本"),
+    ("Installed PostgreSQL client tools are version", "已安装的 PostgreSQL 客户端工具版本为"),
+    ("; version", "；需要版本"),
+    ("or newer is required.", "或更高。"),
+    ("Note: packages installed inside the container are lost when the container is recreated.",
+     "注意: 装在容器里的包，容器重建后会丢。"),
+    ("is not in the distribution repositories; adding the official PostgreSQL apt repository...",
+     "不在系统源里，正在添加 PostgreSQL 官方 apt 源..."),
+    ("Could not determine the Enterprise Linux release; install the PostgreSQL",
+     "无法识别 Enterprise Linux 版本，请手动安装 PostgreSQL"),
+    ("client tools manually.", "客户端工具。"),
+    ("is not in the enabled repositories; adding the official PostgreSQL yum repository...",
+     "不在已启用的源里，正在添加 PostgreSQL 官方 yum 源..."),
+    ("Unsupported OS '", "不支持的系统 '"),
+    ("'; install the PostgreSQL client tools manually.", "'，请手动安装 PostgreSQL 客户端工具。"),
+    ("pg_dump/pg_restore are still unavailable after installation.", "安装后 pg_dump/pg_restore 仍然不可用。"),
+    ("PostgreSQL client tools are version", "PostgreSQL 客户端工具版本为"),
+    ("after installation but", "，但需要"),
+    ("or newer is required; install them manually.", "或更高，请手动安装。"),
+    ("PostgreSQL client tools are ready (version", "PostgreSQL 客户端工具已就绪(版本"),
+    ("PostgreSQL already appears to be installed on this system.", "这台机器上似乎已装了 PostgreSQL。"),
+    ("Run setup anyway (ensures the xui database/user exist)?", "仍然执行配置吗?(确保 xui 库和用户存在)"),
+    ("Installing PostgreSQL server and creating a dedicated user/database...",
+     "正在安装 PostgreSQL 服务端并创建专用用户和数据库..."),
+    ("PostgreSQL installation failed.", "PostgreSQL 安装失败。"),
+    ("PostgreSQL is installed and ready.", "PostgreSQL 已安装就绪。"),
+    ("Connection DSN:", "连接 DSN:"),
+    ("Use option 2 to migrate your SQLite data and switch the panel to PostgreSQL.",
+     "选第 2 项可以把 SQLite 数据迁过来，并把面板切到 PostgreSQL。"),
+    ("x-ui is not installed.", "x-ui 未安装。"),
+    ("This copies your current SQLite data into a PostgreSQL database,", "会把当前 SQLite 数据复制到 PostgreSQL 数据库，"),
+    ("then switches the panel to PostgreSQL and restarts it.", "然后把面板切到 PostgreSQL 并重启。"),
+    ("Any existing panel tables in the destination will be cleared and overwritten.", "目标库里已有的面板表会被清空覆盖。"),
+    ("Continue?", "继续吗?"),
+    ("A PostgreSQL database was created in this session:", "本次会话中已创建了一个 PostgreSQL 数据库:"),
+    ("Migrate into this database?", "迁移到这个数据库?"),
+    ("Install PostgreSQL locally and create a dedicated user/db (recommended)",
+     "本机安装 PostgreSQL 并创建专用用户和库(推荐)"),
+    ("Use an existing PostgreSQL server (enter DSN)", "使用已有的 PostgreSQL 服务器(输入 DSN)"),
+    ("Choose [1]: ", "请选择 [1]: "),
+    ("Enter PostgreSQL DSN (postgres://user:pass@host:port/dbname?sslmode=disable): ",
+     "请输入 PostgreSQL DSN (postgres://user:pass@host:port/dbname?sslmode=disable): "),
+    ("Installing PostgreSQL locally (this may take a moment)...", "正在本机安装 PostgreSQL(需要一会儿)..."),
+    ("PostgreSQL installation failed. Aborting migration.", "PostgreSQL 安装失败，迁移中止。"),
+    ("Stopping panel to take a consistent snapshot...", "正在停止面板以获取一致的数据快照..."),
+    ("Migrating data into PostgreSQL...", "正在把数据迁入 PostgreSQL..."),
+    ("Migration failed. The panel was NOT switched to PostgreSQL.", "迁移失败，面板未切换到 PostgreSQL。"),
+    ("Wrote database settings to", "数据库配置已写入"),
+    ("Restarting panel on PostgreSQL...", "正在以 PostgreSQL 重启面板..."),
+    ("Migration complete. The panel is now running on PostgreSQL.", "迁移完成，面板已运行在 PostgreSQL 上。"),
+    ("Panel did not come up. Check logs (main menu option 17). Your SQLite data is left intact.",
+     "面板没起来，请到主菜单的日志管理查看，SQLite 数据仍然完好。"),
+    ("PostgreSQL (server + client + xui db)", "PostgreSQL(服务端 + 客户端 + xui 库)"),
+    ("Migrate SQLite", "迁移 SQLite"),
+    ("Status (clusters & port 5432)", "状态(集群与 5432 端口)"),
+    ("Start", "启动"),
+    ("Stop", "停止"),
+    ("Restart PostgreSQL", "重启 PostgreSQL"),
+    ("Autostart on boot", "开机自启"),
+    ("View PostgreSQL Log", "查看 PostgreSQL 日志"),
+    ("Convert SQLite", "转换 SQLite"),
+    ("Install/Upgrade client tools (pg_dump/pg_restore)", "安装/升级客户端工具(pg_dump/pg_restore)"),
+    ("Required PostgreSQL major version (empty = any): ", "需要的 PostgreSQL 主版本(留空则不限): "),
+    ("x-ui binary not found at", "找不到 x-ui 可执行文件:"),
+    (". Is the panel installed?", "。面板装了吗?"),
+    ("This x-ui build does not support .db <-> .dump conversion yet.", "当前 x-ui 版本还不支持 .db 与 .dump 互转。"),
+    ("Update the panel first (x-ui update) to a version with 'migrate-db --dump/--restore'.",
+     "请先执行 x-ui update 升级到带 migrate-db --dump/--restore 的版本。"),
+    ("Input file not found:", "输入文件不存在:"),
+    ("Usage:", "用法:"),
+    ("already exists and will be overwritten. Continue?", "已存在且会被覆盖，继续吗?"),
+    ("Output", "输出文件"),
+    ("Dumping SQLite database to SQL text:", "正在把 SQLite 数据库导出为 SQL 文本:"),
+    ("Done. Wrote", "完成，已写入"),
+    ("Dump failed.", "导出失败。"),
+    ("Refusing to restore into the live database (", "拒绝在 x-ui 运行时写入正在使用的数据库("),
+    (") while x-ui is running.", ")。"),
+    ("Stop the panel first (x-ui stop) or choose a different output path.", "请先执行 x-ui stop，或者换一个输出路径。"),
+    ("Rebuilding SQLite database from SQL text:", "正在从 SQL 文本重建 SQLite 数据库:"),
+    ("Done. Created", "完成，已创建"),
+    ("Restore failed.", "恢复失败。"),
+    ("Convert between a SQLite", "在 SQLite"),
+    ("and a portable", "与可移植的"),
+    ("(direction auto-detected).", "之间转换(方向自动识别)。"),
+    ("Input file [", "输入文件 ["),
+    ("Output file (leave empty to auto-name next to input): ", "输出文件(留空则在输入文件旁自动命名): "),
+
+    # 以下为旧版本(v2.5/v2.6)的措辞差异，保证跨版本覆盖
+    ("Your OS is Arch Linux", "当前系统是 Arch Linux"),
+    ("Your OS is Parch Linux", "当前系统是 Parch Linux"),
+    ("Your OS is Manjaro", "当前系统是 Manjaro"),
+    ("Your OS is Armbian", "当前系统是 Armbian"),
+    ("Your OS is Alpine Linux", "当前系统是 Alpine Linux"),
+    ("Please use CentOS 8 or higher", "请使用 CentOS 8 或更高版本"),
+    ("Please use Ubuntu 20 or higher version!", "请使用 Ubuntu 20 或更高版本！"),
+    ("Please use Fedora 36 or higher version!", "请使用 Fedora 36 或更高版本！"),
+    ("Please use Amazon Linux 2023!", "请使用 Amazon Linux 2023！"),
+    ("Please use Debian 11 or higher", "请使用 Debian 11 或更高版本"),
+    ("Please use AlmaLinux 8.0 or higher", "请使用 AlmaLinux 8.0 或更高版本"),
+    ("Please use Rocky Linux 8 or higher", "请使用 Rocky Linux 8 或更高版本"),
+    ("Please use Oracle Linux 8 or higher", "请使用 Oracle Linux 8 或更高版本"),
+    ("Your operating system is not supported by this script.", "本脚本不支持当前操作系统。"),
+    ("Please ensure you are using one of the following supported operating systems:", "请确认使用的是下列受支持的系统之一:"),
+    ("This function will forcefully reinstall the latest version, and the data will not be lost. Do you want to continue?",
+     "此操作会强制重装最新版本，数据不会丢失。继续吗?"),
+    ("Panel login secret token disabled", "面板登录密钥令牌已关闭"),
+    ("Reset Username & Password & Secret Token", "重置用户名、密码和密钥令牌"),
+    ("Please enter a domain from the list to revoke the certificate: ", "请从上面选一个域名来吊销证书: "),
+    ("Certificate revoked for domain:", "证书已吊销，域名:"),
+    ("System already has certificates for this domain. Cannot issue again. Current certificate details:",
+     "该域名已有证书，无法重复签发。当前证书详情:"),
+    ("1. Cloudflare Registered E-mail.", "1. Cloudflare 注册邮箱。"),
+    ("2. Cloudflare Global API Key.", "2. Cloudflare Global API Key。"),
+    ("3. The Domain Name.", "3. 域名。"),
+    ("4. Once the certificate is issued, you will be prompted to set the certificate for the panel (optional).",
+     "4. 证书签发后会问你要不要设给面板(可选)。"),
+    ("5. The script also supports automatic renewal of the SSL certificate after installation.",
+     "5. 安装完成后脚本也支持证书自动续期。"),
+    ("Please set the API key:", "请设置 API Key:"),
+    ("Your API key is:", "你的 API Key 是:"),
+    ("Please set up registered email:", "请设置注册邮箱:"),
+    ("Your registered email address is:", "你的注册邮箱是:"),
+    ("Get SSL", "申请证书"),
+]
+
+# 主菜单条目标签
+XUI_MENU_ITEMS: List[Tuple[str, str]] = [
+    ("Exit Script", "退出脚本"),
+    ("Install", "安装面板"),
+    ("Update", "更新面板"),
+    ("Update to Dev Channel (latest commit)", "更新到开发版(最新提交)"),
+    ("Update Menu", "更新菜单脚本"),
+    ("Legacy Version", "安装指定旧版本"),
+    ("Uninstall", "卸载面板"),
+    ("Reset Username & Password", "重置用户名和密码"),
+    ("Reset Web Base Path", "重置面板访问路径"),
+    ("Reset Settings", "重置面板设置"),
+    ("Change Port", "修改面板端口"),
+    ("View Current Settings", "查看当前设置"),
+    ("Start", "启动面板"),
+    ("Stop", "停止面板"),
+    ("Restart", "重启面板"),
+    ("Restart Xray", "重启 Xray"),
+    ("Check Status", "查看运行状态"),
+    ("Logs Management", "日志管理"),
+    ("Enable Autostart", "开启开机自启"),
+    ("Disable Autostart", "关闭开机自启"),
+    ("SSL Certificate Management", "SSL 证书管理"),
+    ("Cloudflare SSL Certificate", "Cloudflare SSL 证书"),
+    ("IP Limit Management", "IP 限制管理"),
+    ("Firewall Management", "防火墙管理"),
+    ("SSH Port Forwarding Management", "SSH 端口转发管理"),
+    ("PostgreSQL Management", "PostgreSQL 管理"),
+    ("Enable BBR", "启用 BBR"),
+    ("Update Geo Files", "更新 Geo 文件"),
+    ("Speedtest by Ookla", "Ookla 测速"),
+]
+
+# 菜单框标题
+XUI_MENU_TITLES: List[Tuple[str, str]] = [
     ("3X-UI Panel Management Script", "3X-UI 面板管理脚本"),
-    ("0.${plain} Exit Script", "0.${plain} 退出脚本"),
-    ("1.${plain} Install", "1.${plain} 安装"),
-    ("2.${plain} Update", "2.${plain} 更新"),
-    ("3.${plain} Update Menu", "3.${plain} 更新菜单"),
-    ("4.${plain} Legacy Version", "4.${plain} 旧版安装"),
-    ("5.${plain} Uninstall", "5.${plain} 卸载"),
-    ("6.${plain} Reset Username & Password", "6.${plain} 重置用户名和密码"),
-    ("7.${plain} Reset Web Base Path", "7.${plain} 重置面板访问路径"),
-    ("8.${plain} Reset Settings", "8.${plain} 重置面板设置"),
-    ("9.${plain} Change Port", "9.${plain} 修改面板端口"),
-    ("10.${plain} View Current Settings", "10.${plain} 查看当前设置"),
-    ("11.${plain} Start", "11.${plain} 启动"),
-    ("12.${plain} Stop", "12.${plain} 停止"),
-    ("13.${plain} Restart", "13.${plain} 重启"),
-    ("14.${plain} Restart Xray", "14.${plain} 重启 Xray"),
-    ("15.${plain} Check Status", "15.${plain} 查看状态"),
-    ("16.${plain} Logs Management", "16.${plain} 日志管理"),
-    ("17.${plain} Enable Autostart", "17.${plain} 启用开机自启"),
-    ("18.${plain} Disable Autostart", "18.${plain} 禁用开机自启"),
-    ("19.${plain} SSL Certificate Management", "19.${plain} SSL 证书管理"),
-    ("20.${plain} Cloudflare SSL Certificate", "20.${plain} Cloudflare SSL 证书"),
-    ("21.${plain} IP Limit Management", "21.${plain} IP 限制管理"),
-    ("22.${plain} Firewall Management", "22.${plain} 防火墙管理"),
-    ("23.${plain} SSH Port Forwarding Management", "23.${plain} SSH 端口转发管理"),
-    ("24.${plain} Enable BBR", "24.${plain} 启用 BBR"),
-    ("25.${plain} Update Geo Files", "25.${plain} 更新 Geo 文件"),
-    ("26.${plain} Speedtest by Ookla", "26.${plain} Ookla 测速"),
-    ("27.${plain} PostgreSQL Management", "27.${plain} PostgreSQL 管理"),
-    ('read -rp "Please enter your selection [0-27]: " num', 'read -rp "请输入选项 [0-27]: " num'),
-    ('LOGE "Please enter the correct number [0-27]"', 'LOGE "请输入正确选项 [0-27]"'),
-    ('echo -e "Panel state: ${green}Running${plain}"', 'echo -e "面板状态: ${green}运行中${plain}"'),
-    ('echo -e "Panel state: ${yellow}Not Running${plain}"', 'echo -e "面板状态: ${yellow}未运行${plain}"'),
-    ('echo -e "Panel state: ${red}Not Installed${plain}"', 'echo -e "面板状态: ${red}未安装${plain}"'),
-    ('echo -e "Start automatically: ${green}Yes${plain}"', 'echo -e "开机自启: ${green}是${plain}"'),
-    ('echo -e "Start automatically: ${red}No${plain}"', 'echo -e "开机自启: ${red}否${plain}"'),
-    ('echo -e "xray state: ${green}Running${plain}"', 'echo -e "xray 状态: ${green}运行中${plain}"'),
-    ('echo -e "xray state: ${red}Not Running${plain}"', 'echo -e "xray 状态: ${red}未运行${plain}"'),
+    ("x-ui control menu usages (subcommands):", "x-ui 子命令用法:"),
+]
+
+# x-ui 子命令用法框的条目说明
+XUI_USAGE_ITEMS: List[Tuple[str, str]] = [
+    ("Admin Management Script", "打开管理菜单"),
+    ("Start", "启动面板"),
+    ("Stop", "停止面板"),
+    ("Restart", "重启面板"),
+    ("Restart Xray", "重启 Xray"),
+    ("Current Status", "查看运行状态"),
+    ("Current Settings", "查看当前设置"),
+    ("Enable Autostart on OS Startup", "开启开机自启"),
+    ("Disable Autostart on OS Startup", "关闭开机自启"),
+    ("Check logs", "查看日志"),
+    ("Check Fail2ban ban logs", "查看 Fail2ban 封禁日志"),
+    ("Update", "更新面板"),
+    ("Update to Dev channel (latest)", "更新到开发版(最新)"),
+    ("Update all geo files", "更新全部 Geo 文件"),
+    ("Convert .db <-> .dump (SQLite)", "SQLite .db 与 .dump 互转"),
+    ("Upgrade pg_dump/pg_restore tools", "升级 pg_dump/pg_restore 工具"),
+    ("Legacy version", "安装指定旧版本"),
+    ("Install", "安装面板"),
+    ("Uninstall", "卸载面板"),
+    ("legacy version", "安装指定旧版本"),
 ]
 
 
@@ -970,6 +1528,120 @@ def is_xui_menu_localized(script_path: str) -> bool:
         return False
 
 
+XUI_TEXT_PHRASES_SORTED = sorted(XUI_TEXT_PHRASES, key=lambda kv: len(kv[0]), reverse=True)
+XUI_MENU_ITEM_MAP = dict(XUI_MENU_ITEMS)
+XUI_MENU_TITLE_MAP = dict(XUI_MENU_TITLES)
+XUI_USAGE_ITEM_MAP = dict(XUI_USAGE_ITEMS)
+
+# 只翻译会打印给用户的语句，避免动到脚本逻辑
+XUI_OUTPUT_STMT_RE = re.compile(r"^\s*(LOGI|LOGE|LOGD|confirm|echo|read )")
+XUI_QUOTED_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# ${var}/$(...)/\n 这类内容原样保留，只翻译它们之间的自然语言
+XUI_PLACEHOLDER_RE = re.compile(r"\$\{[^}]*\}|\$\([^)]*\)|\$\w+|\\[nte]|https?://\S+|\$")
+XUI_BOX_LINE_RE = re.compile(r"^([\u2502|])(.*)([\u2502|])$")
+XUI_BOX_TOP_RE = re.compile(r"[\u250c\u2554](\u2500+)[\u2510\u2557]")
+XUI_BOX_BOTTOM_RE = re.compile(r"^\s*[\u2514\u255a]")
+XUI_MENU_ENTRY_RE = re.compile(r"^(\s*\$\{green\}\s*\d+\.\$\{plain\}\s*)(.*?)\s*$")
+XUI_USAGE_ENTRY_RE = re.compile(r"^(\s*\$\{blue\}[^$]*\$\{plain\})(\s*)-\s*(.*?)\s*$")
+XUI_COLOR_RE = re.compile(r"\$\{[^}]*\}")
+
+# 菜单编号会随上游版本变动，这类提示只能按模式匹配
+XUI_TEXT_PATTERNS: List[Tuple[Any, str]] = [
+    (re.compile(r"Please enter your selection \[(\d+)-(\d+)\]: "), r"请输入选项 [\1-\2]: "),
+    (re.compile(r"Please enter the correct number \[(\d+)-(\d+)\]"), r"请输入正确的选项 [\1-\2]"),
+    (re.compile(r"\[Default (?=[^\]]*\])"), "[默认 "),
+]
+
+
+def display_width(text: str) -> int:
+    width = 0
+    for ch in text:
+        if unicodedata.combining(ch):
+            continue
+        width += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return width
+
+
+def translate_xui_segment(segment: str) -> str:
+    result = segment
+    for english, chinese in XUI_TEXT_PHRASES_SORTED:
+        if english in result:
+            result = result.replace(english, chinese)
+    return result
+
+
+def translate_xui_quoted(body: str) -> str:
+    pieces: List[str] = []
+    cursor = 0
+    for match in XUI_PLACEHOLDER_RE.finditer(body):
+        pieces.append(translate_xui_segment(body[cursor:match.start()]))
+        pieces.append(match.group(0))
+        cursor = match.end()
+    pieces.append(translate_xui_segment(body[cursor:]))
+    translated = "".join(pieces)
+    for pattern, replacement in XUI_TEXT_PATTERNS:
+        translated = pattern.sub(replacement, translated)
+    return translated
+
+
+def translate_xui_output_line(line: str) -> str:
+    if not XUI_OUTPUT_STMT_RE.match(line):
+        return line
+    return XUI_QUOTED_RE.sub(lambda m: '"%s"' % translate_xui_quoted(m.group(1)), line)
+
+
+def _pad_box_line(left: str, body: str, right: str, width: int) -> str:
+    pad = width - display_width(XUI_COLOR_RE.sub("", body))
+    return f"{left}{body}{' ' * max(pad, 1)}{right}"
+
+
+def translate_xui_box_line(line: str, width: int) -> str:
+    """翻译边框菜单里的条目，并按显示宽度重新补齐，避免边框错位。"""
+    matched = XUI_BOX_LINE_RE.match(line)
+    if not matched:
+        return line
+    left, inner, right = matched.group(1), matched.group(2), matched.group(3)
+    if not re.search(r"[A-Za-z]", XUI_COLOR_RE.sub("", inner)):
+        return line
+
+    entry = XUI_MENU_ENTRY_RE.match(inner)
+    if entry:
+        chinese = XUI_MENU_ITEM_MAP.get(entry.group(2))
+        if chinese is None:
+            return line
+        return _pad_box_line(left, entry.group(1) + chinese, right, width)
+
+    usage = XUI_USAGE_ENTRY_RE.match(inner)
+    if usage:
+        chinese = XUI_USAGE_ITEM_MAP.get(usage.group(3))
+        if chinese is None:
+            return line
+        return _pad_box_line(left, f"{usage.group(1)}{usage.group(2)}- {chinese}", right, width)
+
+    for english, chinese in XUI_MENU_TITLE_MAP.items():
+        if english in inner:
+            return _pad_box_line(left, inner.replace(english, chinese).rstrip(), right, width)
+    return line
+
+
+def localize_xui_script(content: str) -> str:
+    lines = content.splitlines()
+    result: List[str] = []
+    box_width: Optional[int] = None
+    for line in lines:
+        top = XUI_BOX_TOP_RE.search(line)
+        if top:
+            box_width = len(top.group(1))
+        if box_width and XUI_BOX_LINE_RE.match(line):
+            result.append(translate_xui_box_line(line, box_width))
+            continue
+        if XUI_BOX_BOTTOM_RE.match(line):
+            box_width = None
+        result.append(translate_xui_output_line(line))
+    localized = "\n".join(result)
+    return localized + "\n" if content.endswith("\n") else localized
+
+
 def apply_xui_menu_localization() -> None:
     script_path = find_xui_cli_script()
     if not script_path:
@@ -992,16 +1664,9 @@ def apply_xui_menu_localization() -> None:
         except OSError as e:
             exit_error(f"备份 x-ui 脚本失败: {e}")
 
-    updated = content
-    applied = 0
-    for old, new in XUI_MENU_REPLACEMENTS:
-        if old not in updated:
-            continue
-        updated = updated.replace(old, new)
-        applied += 1
-
-    if applied == 0:
-        exit_error("x-ui 汉化失败：未匹配到菜单文本，可能脚本版本不兼容")
+    updated = localize_xui_script(content)
+    if updated == content:
+        exit_error("x-ui 汉化失败：未匹配到任何可翻译文本，可能脚本版本不兼容")
 
     if updated.startswith("#!"):
         lines = updated.splitlines(keepends=True)
